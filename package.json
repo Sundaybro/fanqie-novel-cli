@@ -1,0 +1,54 @@
+{
+  "name": "fanqie-autopub-mcp",
+  "version": "1.2.1",
+  "description": "番茄小说自动发布 MCP：登录 / 新建短故事（+微头条引流）/ 新增小说 / 新增小说章节（含批量、定时、分章）",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "fanqie-autopub-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "start:http": "node dist/index.js --http",
+    "smoke": "node scripts/regression.mjs && node scripts/smoke.mjs",
+    "test": "npm run build && npm run smoke",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangmi829/fanqie-autopub-mcp.git"
+  },
+  "homepage": "https://github.com/yangmi829/fanqie-autopub-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/yangmi829/fanqie-autopub-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "fanqie",
+    "tomato-novel",
+    "autopublish",
+    "short-story"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^4.6.7"
+  },
+  "optionalDependencies": {
+    "puppeteer-core": "^25.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

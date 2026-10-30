@@ -1,0 +1,317 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "fanqie-smoke-"));
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version;
+const SMOKE_NOVEL_ID = "nov_smoke0001";
+fs.writeFileSync(path.join(TMP, "novels.json"), JSON.stringify([
+    {
+        id: SMOKE_NOVEL_ID,
+        title: "TEST_FIXTURE_NOVEL",
+        gender: 1,
+        tomatoBookId: "1234567890",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+], null, 2), "utf-8");
+const SMOKE_CHAPTER_DIR = path.join(TMP, "chapters");
+fs.mkdirSync(SMOKE_CHAPTER_DIR, { recursive: true });
+fs.writeFileSync(path.join(SMOKE_CHAPTER_DIR, "第01章_TEST_FIXTURE_ONE.md"), "# 第01章 TEST_FIXTURE_ONE\n\n> **本章概要**：这段元信息不该进正文\n> **本章爽点**：也不该\n\n---\n\nTEST_FIXTURE_BODY_ONE.\n\n第二段。\n", "utf-8");
+fs.writeFileSync(path.join(SMOKE_CHAPTER_DIR, "第02章_TEST_FIXTURE_TWO.md"), "# 第02章 TEST_FIXTURE_TWO\n\nTEST_FIXTURE_BODY_THREE.\n", "utf-8");
+const EXPECTED_TOOLS = [
+    "login_tomato",
+    "set_tomato_cookies",
+    "get_publish_status",
+    "list_novels_tomato",
+    "create_novel_tomato",
+    "update_novel",
+    "update_novel_info_tomato",
+    "list_chapters_tomato",
+    "add_chapter_tomato",
+    "update_chapter_tomato",
+    "batch_publish_chapters",
+    "list_short_stories_tomato",
+    "get_short_story_tomato",
+    "create_short_story_tomato",
+    "update_short_story_tomato",
+    "publish_short_story_tomato",
+    "set_short_story_cover_tomato",
+    "delete_short_story_tomato",
+    "create_micro_headline_tomato",
+    "list_micro_headlines_tomato",
+    "save_article",
+    "list_articles",
+    "get_article",
+    "delete_article",
+    "export_article",
+    "import_articles_from_dir",
+    "list_genres",
+    "check_originality",
+    "set_book_tags",
+    "get_stats",
+];
+const EXPECTED_RESOURCES = [
+    "fanqie://status",
+    "fanqie://novels",
+    "fanqie://short-stories",
+    "fanqie://articles",
+    "fanqie://tasks",
+    "fanqie://publish-rules",
+    "fanqie://genres",
+    "fanqie://golden-three-chapters",
+];
+let failures = 0;
+const httpChildren = [];
+function check(name, cond, extra = "") {
+    const mark = cond ? "PASS" : "FAIL";
+    if (!cond)
+        failures++;
+    console.log(`[${mark}] ${name}${extra ? "  " + extra : ""}`);
+}
+function parse(res) {
+    const text = res?.content?.find((c) => c.type === "text")?.text ?? "";
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return { _text: text };
+    }
+}
+const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(ROOT, "dist", "index.js")],
+    env: { ...process.env, FANQIE_DATA_DIR: TMP, FANQIE_ENABLE_BROWSER: "0" },
+    stderr: "pipe",
+});
+const client = new Client({ name: "smoke", version: "0.0.0" });
+try {
+    await client.connect(transport);
+    console.log("已连接 server（stdio）。\n");
+    check("stdio serverInfo 版本与 package.json 一致", client.getServerVersion()?.version === PKG_VERSION, `实际=${client.getServerVersion()?.version} 期望=${PKG_VERSION}`);
+    const instructions = client.getInstructions() ?? "";
+    check("server instructions 非空", instructions.trim().length > 100, `实际长度=${instructions.trim().length}`);
+    const tools = await client.listTools();
+    const names = tools.tools.map((t) => t.name);
+    check("工具总数=30", names.length === 30, `实际=${names.length}`);
+    for (const t of EXPECTED_TOOLS)
+        check(`工具存在: ${t}`, names.includes(t));
+    const resources = await client.listResources();
+    const uris = resources.resources.map((r) => r.uri);
+    for (const u of EXPECTED_RESOURCES)
+        check(`资源存在: ${u}`, uris.includes(u));
+    let r = parse(await client.callTool({ name: "get_stats", arguments: { remote: false } }));
+    check("get_stats 返回 local 统计", r?.local && typeof r.local.articles?.total === "number");
+    r = parse(await client.callTool({ name: "list_articles", arguments: {} }));
+    check("list_articles 空库返回 total=0", r?.total === 0);
+    r = parse(await client.callTool({ name: "save_article", arguments: { kind: "chapter", title: "TEST_FIXTURE_CHAPTER", content: "第一段。\n\n第二段。", chapter_number: 1 } }));
+    check("save_article 返回 article_id", typeof r?.article?.id === "string", `id=${r?.article?.id ?? "?"}`);
+    const artId = r?.article?.id;
+    r = parse(await client.callTool({ name: "get_article", arguments: { article_id: artId } }));
+    check("get_article 取回正文", typeof r?.content === "string" && r.content.includes("第一段"));
+    r = parse(await client.callTool({ name: "list_genres", arguments: {} }));
+    check("list_genres 返回赛道知识库", typeof r?.total === "number" && r.total > 0 && Array.isArray(r.genres));
+    r = parse(await client.callTool({ name: "check_originality", arguments: { content: "第一段。\n\n第二段。", threshold: 0.25 } }));
+    check("check_originality 返回 similarity/passed", typeof r?.similarity === "number" && typeof r?.passed === "boolean");
+    r = parse(await client.callTool({ name: "export_article", arguments: { article_id: artId } }));
+    check("export_article 返回文件路径", typeof r?.filePath === "string" && r.filePath.length > 0, `path=${r?.filePath ?? "?"}`);
+    r = parse(await client.callTool({ name: "delete_article", arguments: { article_id: artId, confirm: false } }));
+    check("delete_article(confirm=false) 为预览", r?.action === "preview" && r?.ok !== false);
+    r = parse(await client.callTool({ name: "save_article", arguments: { article_id: artId, title: "TEST_FIXTURE_CHAPTER（改名）", chapter_number: 3 } }));
+    check("save_article(带 article_id) 走更新", r?.action === "updated" && r?.article?.title === "TEST_FIXTURE_CHAPTER（改名）" && r?.article?.chapterNumber === 3, `action=${r?.action}`);
+    r = parse(await client.callTool({ name: "update_novel", arguments: { novel_id: SMOKE_NOVEL_ID, status: "连载中", target_words_per_chapter: 2500, genre: "urban_system" } }));
+    check("update_novel 写入本地设定", r?.ok === true && Array.isArray(r?.changed) && r.changed.includes("status") && r?.novel_id === SMOKE_NOVEL_ID, `changed=${JSON.stringify(r?.changed)}`);
+    r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: false } }));
+    check("import_articles_from_dir(confirm=false) 为预览且识别 2 章", r?.action === "preview" && r?.created === 2 && r?.updated === 0, `action=${r?.action} created=${r?.created}`);
+    r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: true } }));
+    check("import_articles_from_dir(confirm=true) 新建 2 章", r?.action === "imported" && r?.created === 2, `created=${r?.created}`);
+    r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: true } }));
+    check("重复导入变为更新（幂等，不重复建条目）", r?.action === "imported" && r?.created === 0 && r?.updated === 2, `created=${r?.created} updated=${r?.updated}`);
+    const ch1 = (r?.planned ?? []).find((p) => p.chapterNumber === 1);
+    r = parse(await client.callTool({ name: "get_article", arguments: { article_id: ch1?.articleId } }));
+    check("导入结果：章节号/标题/正文都正确（剥掉概要块与 markdown）", r?.chapterNumber === 1 &&
+        r?.title === "第01章 TEST_FIXTURE_ONE" &&
+        /TEST_FIXTURE_BODY_ONE\./.test(r?.content || "") &&
+        !/本章概要|\*\*|---/.test(r?.content || ""), `title=${r?.title}`);
+    r = parse(await client.callTool({ name: "list_articles", arguments: { novel_id: SMOKE_NOVEL_ID } }));
+    check("导入后该小说下共 2 条文稿", r?.total === 2, `total=${r?.total}`);
+    r = parse(await client.callTool({ name: "get_publish_status", arguments: { verify_login: false } }));
+    check("get_publish_status 可调用并返回 ready 字段", typeof r?.ready === "boolean");
+    const res = await client.readResource({ uri: "fanqie://publish-rules" });
+    const body = JSON.parse(res.contents[0].text);
+    check("publish-rules 含短故事字数规则", /6000/.test(JSON.stringify(body)) && /80000/.test(JSON.stringify(body)));
+    check("publish-rules 含微头条规则", /microHeadline/.test(JSON.stringify(body)) && /1500/.test(JSON.stringify(body.microHeadline ?? {})));
+    const genresRes = await client.readResource({ uri: "fanqie://genres" });
+    const genresBody = JSON.parse(genresRes.contents[0].text);
+    check("genres 资源含赛道条目", Array.isArray(genresBody) && genresBody.length > 0);
+    const goldenRes = await client.readResource({ uri: "fanqie://golden-three-chapters" });
+    check("golden-three 资源为 markdown", genresBody.length > 0 && /黄金三章/.test(goldenRes.contents[0].text));
+    const HTTP_TOKEN = "smoke-token-0123456789abcdef";
+    const TMP_HTTP = path.join(TMP, "http-data");
+    fs.mkdirSync(TMP_HTTP, { recursive: true });
+    async function startHttpServer(extraEnv = {}) {
+        const child = spawn(process.execPath, [path.join(ROOT, "dist", "index.js"), "--http"], {
+            env: {
+                ...process.env,
+                FANQIE_DATA_DIR: TMP_HTTP,
+                FANQIE_ENABLE_BROWSER: "0",
+                FANQIE_HTTP_TOKEN: HTTP_TOKEN,
+                FANQIE_HTTP_HOST: "127.0.0.1",
+                FANQIE_HTTP_PORT: "0",
+                ...extraEnv,
+            },
+            stdio: ["ignore", "ignore", "pipe"],
+        });
+        httpChildren.push(child);
+        let stderr = "";
+        child.stderr.on("data", (b) => {
+            stderr += b.toString("utf-8");
+        });
+        const url = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                clearInterval(poll);
+                reject(new Error(`远程端点 15s 内未就绪。stderr:\n${stderr}`));
+            }, 15000);
+            const poll = setInterval(() => {
+                const m = /远程端点已就绪: (http:\/\/[^\s（]+)/.exec(stderr);
+                if (m) {
+                    clearInterval(poll);
+                    clearTimeout(timer);
+                    resolve(m[1]);
+                }
+            }, 50);
+            child.once("exit", (code) => {
+                clearInterval(poll);
+                clearTimeout(timer);
+                reject(new Error(`远程进程提前退出 code=${code}。stderr:\n${stderr}`));
+            });
+        });
+        return { child, url, stderr: () => stderr };
+    }
+    async function connectHttp(url, token = HTTP_TOKEN) {
+        const c = new Client({ name: "smoke-http", version: "0.0.0" });
+        const t = new StreamableHTTPClientTransport(new URL(url), {
+            requestInit: { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        });
+        await c.connect(t);
+        return c;
+    }
+    function runToExit(extraEnv = {}) {
+        return new Promise((resolve) => {
+            const child = spawn(process.execPath, [path.join(ROOT, "dist", "index.js"), "--http"], {
+                env: {
+                    ...process.env,
+                    FANQIE_DATA_DIR: TMP_HTTP,
+                    FANQIE_ENABLE_BROWSER: "0",
+                    FANQIE_HTTP_HOST: "127.0.0.1",
+                    FANQIE_HTTP_PORT: "0",
+                    ...extraEnv,
+                },
+                stdio: ["ignore", "ignore", "pipe"],
+            });
+            httpChildren.push(child);
+            let stderr = "";
+            child.stderr.on("data", (b) => {
+                stderr += b.toString("utf-8");
+            });
+            const timer = setTimeout(() => {
+                child.kill();
+                resolve({ code: -1, stderr: stderr + "\n（10s 未退出，已强杀）" });
+            }, 10000);
+            child.once("exit", (code) => {
+                clearTimeout(timer);
+                resolve({ code, stderr });
+            });
+        });
+    }
+    try {
+        const srv = await startHttpServer();
+        check("远程(--http) 启动并通告端点", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(srv.url), srv.url);
+        const health = await fetch(new URL("/health", srv.url));
+        const healthBody = await health.json().catch(() => ({}));
+        check("远程 /health 免鉴权可探活", health.status === 200 && healthBody.ok === true);
+        check("远程 /health 版本与 package.json 一致", healthBody.version === PKG_VERSION, `实际=${healthBody.version} 期望=${PKG_VERSION}`);
+        const noToken = await fetch(srv.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        });
+        check("远程 配了 Token 时无 Token 请求被拒（401）", noToken.status === 401, `status=${noToken.status}`);
+        const httpClient = await connectHttp(srv.url);
+        const httpTools = await httpClient.listTools();
+        check("远程 走真协议列出 30 个工具", httpTools.tools.length === 30, `实际=${httpTools.tools.length}`);
+        let hr = parse(await httpClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+        check("远程 可调用只读工具", typeof hr?.local?.articles?.total === "number");
+        hr = parse(await httpClient.callTool({ name: "save_article", arguments: { kind: "chapter", title: "远程冒烟", content: "远程写入。" } }));
+        check("远程 带 Token 可调用写工具", typeof hr?.article?.id === "string");
+        await httpClient.close();
+        srv.child.kill();
+        const ro = await startHttpServer({ FANQIE_HTTP_READONLY: "1" });
+        const roClient = await connectHttp(ro.url);
+        const roTools = await roClient.listTools();
+        check("远程[只读] 工具清单不变（30）", roTools.tools.length === 30, `实际=${roTools.tools.length}`);
+        const roStats = parse(await roClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+        check("远程[只读] 只读工具照常可用", typeof roStats?.local?.articles?.total === "number");
+        const readonlyBlocked = [
+            "save_article",
+            "delete_article",
+            "export_article",
+            "update_novel",
+            "import_articles_from_dir",
+            "publish_short_story_tomato",
+            "add_chapter_tomato",
+            "login_tomato",
+        ];
+        for (const name of readonlyBlocked) {
+            let detail = "未被拦截（写操作会真的执行）";
+            let blocked = false;
+            try {
+                await roClient.callTool({ name, arguments: {} });
+            }
+            catch (e) {
+                detail = String(e?.message ?? e).slice(0, 140);
+                blocked = /只读模式/.test(detail);
+            }
+            check(`远程[只读] 拦截写工具: ${name}`, blocked, detail);
+        }
+        await roClient.close();
+        ro.child.kill();
+        const open = await startHttpServer({ FANQIE_HTTP_TOKEN: "" });
+        check("远程[免鉴权] 启动并通告端点", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(open.url), open.url);
+        check("远程[免鉴权] 启动日志标明「本机免鉴权」", /本机免鉴权/.test(open.stderr()), "");
+        const openHealth = await fetch(new URL("/health", open.url));
+        check("远程[免鉴权] /health 可探活", openHealth.status === 200);
+        const openClient = await connectHttp(open.url, null);
+        const openTools = await openClient.listTools();
+        check("远程[免鉴权] 不带 Authorization 也列出 30 个工具", openTools.tools.length === 30, `实际=${openTools.tools.length}`);
+        const openStats = parse(await openClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+        check("远程[免鉴权] 不带 Authorization 可调用工具", typeof openStats?.local?.articles?.total === "number");
+        await openClient.close();
+        open.child.kill();
+        const exposed = await runToExit({ FANQIE_HTTP_TOKEN: "", FANQIE_HTTP_HOST: "0.0.0.0" });
+        check("远程[无 Token + 非回环] 拒绝启动", exposed.code !== 0, `code=${exposed.code}`);
+        check("远程[无 Token + 非回环] 提示改回环或补 Token", /非回环地址/.test(exposed.stderr) && /FANQIE_HTTP_TOKEN/.test(exposed.stderr), "");
+        const weak = await runToExit({ FANQIE_HTTP_TOKEN: "short" });
+        check("远程[Token 太短] 拒绝启动", weak.code !== 0 && /太短/.test(weak.stderr), `code=${weak.code}`);
+    }
+    catch (e) {
+        check("远程传输冒烟（阶段整体）", false, String(e?.message ?? e));
+    }
+    console.log(`\n===== 冒烟结果：${failures === 0 ? "全绿 ✅" : failures + " 项失败 ❌"} =====`);
+}
+catch (e) {
+    failures++;
+    console.error("冒烟执行异常：", e);
+}
+finally {
+    for (const c of httpChildren)
+        c.kill();
+    await client.close().catch(() => { });
+    fs.rmSync(TMP, { recursive: true, force: true });
+}
+process.exit(failures === 0 ? 0 : 1);
